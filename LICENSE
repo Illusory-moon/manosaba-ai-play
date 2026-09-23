@@ -1,0 +1,33 @@
+MIT License
+
+Copyright (c) 2026 水梦梦 (ShuiMengMeng)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+----------------------------------------------------------------------
+注意（NOTICE）
+
+1. 本许可只覆盖本仓库的作者原创部分：构建脚本、提取脚本、提示词与说明文档。
+   《魔法少女的魔女审判》的游戏文本、图片、音频等一切素材版权归
+   Re,AER LLC / Acacia 及中文发行方所有，不在本许可范围内，本仓库也不分发它们。
+2. 上游数据来源 Manosaba Library（https://github.com/QwQSakuya/Manosaba-Library）：
+   该仓库自研的页面代码、脚本与社区标注以 CC BY-NC-SA 4.0 发布，剧情数据与素材
+   不在其许可范围内。若你基于它的标注/数据做二次作品，请遵守其许可（署名—
+   非商业性使用—相同方式共享）。本仓库只在构建时读取它，不分发其数据文件。
+3. 本项目是粉丝向的个人游玩流程，请自备正版游戏，不要重新发布生成的游戏全文或素材。
