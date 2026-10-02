@@ -74,6 +74,17 @@ def extract_script(tree):
                 "correct": value(data.get("CorrectEvidenceId")),
                 "lineIndex": line_index(data),
             })
+        elif kind == "AddChoice":
+            # 审判选项的「类型按钮」：Objection/Approval/Question/Perjury/Magic<角色>/Cancel。
+            # ChoiceSummary 里那个 id 与库数据 annotations 的 trialChoices 键同名 ⇒ 可精确对接。
+            summary = data.get("ChoiceSummary") or {}
+            parts = ((summary.get("value") or {}).get("parts") or [])
+            lines.append({
+                "type": "choice-button",
+                "choiceId": parts[0].get("id", "") if parts else "",
+                "buttonPath": value(data.get("ButtonPath")),
+                "lineIndex": line_index(data),
+            })
         elif kind == "UpdateWitchBook":
             lines.append({
                 "type": "witchbook",

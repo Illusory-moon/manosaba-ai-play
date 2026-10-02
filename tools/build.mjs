@@ -5,7 +5,7 @@ import { basename, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const root = resolve(import.meta.dirname, '..');
-const outputRoot = join(root, '游戏包');
+const outputRoot = resolve(process.env.MANOSABA_OUT || join(root, '游戏包'));
 const hostRoot = join(root, '主持人');
 const defaultSource = join(tmpdir(), 'manosaba-library-source');
 const sourceRoot = resolve(process.env.MANOSABA_SOURCE || defaultSource);
@@ -35,6 +35,8 @@ const emittedSourceLines = new Set();
 const emittedDialogue = new Map();
 const terminalFiles = new Set();
 const decisionFiles = new Set();
+/** 构建日志：哪些回应正文被截断过（＝原本会吞掉下一条决策的分支）。 */
+const trimmedBodies = [];
 const trialBranchFiles = new Set();
 const locatedGalleryStills = new Set();
 const locatedGalleryTricks = new Set();
@@ -68,8 +70,14 @@ function chapterOf(node, fallback = 1) {
   const match = text.match(/A[12]C([1-6])/i) || text.match(/^0[12]0([1-6])/);
   return match ? Number(match[1]) : fallback;
 }
+// 游戏用颜色传递信息（人类靠立绘/配音就能看出，纯文本会丢）：先把那点线索还原成文字标记，再剥掉其它标签。
+//   #9c8eff（紫）＝【】高亮，游戏里用来提示「洗脑」生效；#ff0000（红）＝血字/坏结局。
+//   只还原「人类看得见的那点线索」，不替玩家下结论（怎么解读写在 AI开场白.md 里）。
 function clean(text = '') {
-  return text.replaceAll('<br>', '  \n').replace(/<link=[^>]+>/g, '').replace(/<\/link>/g, '')
+  return text
+    .replace(/<color=#9c8eff>(.*?)<\/color>/gis, '$1（紫）')
+    .replace(/<color=#ff0000>(.*?)<\/color>/gis, '$1（红）')
+    .replaceAll('<br>', '  \n').replace(/<link=[^>]+>/g, '').replace(/<\/link>/g, '')
     .replace(/<color=[^>]+>|<\/color>|<size=[^>]+>|<\/size>/g, '').replace(/<b>(.*?)<\/b>/gs, '**$1**')
     .replace(/<i>(.*?)<\/i>/gs, '*$1*').replace(/<[^>]+>/g, '').trim();
 }
@@ -150,6 +158,34 @@ function witchbookName(category, id, version) {
   const item = group?.[String(version)] || (versions.length ? group[versions[0]] : null);
   if (category === 'Profile') return speakerNames[id] || speakerNames[String(id).toLowerCase()] || String(id);
   return item?.subtitle || item?.title || item?.name || String(id);
+}
+/** 审判选项的类型按钮 → 中文标签（来源：游戏脚本 AddChoice.ButtonPath，见 主持人/选项类型标签-调研.md）。 */
+const TAG_BY_BUTTON = { Objection: '反驳', Approval: '赞同', Question: '存疑', Perjury: '伪证' };
+/** 角色英文名 → 该角色的魔法名（从图鉴人物档案的「拥有【X】魔法」解析，不硬编）。 */
+function magicNameOf(english) {
+  const target = String(english || '').toLowerCase();
+  const group = witchbookData?.Profile;
+  if (!group || !target) return '';
+  for (const id of Object.keys(group)) {
+    if (id.toLowerCase() !== target) continue;
+    const versions = group[id] || {};
+    let found = '';
+    for (const v of Object.keys(versions).sort((a, b) => Number(a) - Number(b))) {
+      const m = String(versions[v]?.description || '').match(/拥有【(.+?)】魔法/);
+      if (m && m[1]) found = m[1];
+    }
+    return found;
+  }
+  return '';
+}
+/** ButtonPath → 渲染标签；魔法名那一类直接用魔法名本身（例：洗脑）。 */
+function choiceTagFor(buttonPath) {
+  const leaf = String(buttonPath || '').split('/').pop();
+  if (!leaf) return '';
+  if (TAG_BY_BUTTON[leaf]) return TAG_BY_BUTTON[leaf];
+  const magic = leaf.match(/^Magic(.+)$/);
+  if (magic) return magicNameOf(magic[1]) || '魔法名';
+  return '';
 }
 /**
  * 每件证物/人物档案第一次解锁的位置（本周目节点顺序 + 行号）。
@@ -497,8 +533,9 @@ function storyNodeId(path) {
  * 用它把正文截断在真正该做选择的那一句，而不是把选后的内容提前读掉。
  */
 async function loadChoiceSplits() {
-  const path = join(sourceRoot, 'witches_trial_data.json');
-  if (!existsSync(path)) return;
+  // 上游仓库里没有这份文件（原环境是另外备的）⇒ 允许放在 .cache/ 下兜底。
+  const path = [join(sourceRoot, 'witches_trial_data.json'), join(root, '.cache', 'witches_trial_data.json')].find(p => existsSync(p));
+  if (!path) return;
   const data = await json(path);
   const isChoice = line => /@choice/i.test(line.j || '') || /_Choice\d+$/i.test(line.i || '');
   for (const chapter of data.a || []) for (const section of chapter.s || []) {
@@ -698,11 +735,13 @@ async function buildTrialNode(node, actDir, chapter, annotations, names, serials
   // 审判里“清单”的位置用行号定位：先拿到本节点的“台词标签 → 行号”，以及脚本里的 ChoiceEvidence 事件。
   const labelLine = new Map();
   const choiceEvents = [];
+  const buttonById = new Map();
   if (storyPathOf.has(node.id)) {
     const timeline = await json(storyPathOf.get(node.id));
     for (const line of timeline.lines || []) {
       if (line.type === 'text' && line.text && !labelLine.has(line.text)) labelLine.set(line.text, Number.isFinite(line.lineIndex) ? line.lineIndex : 0);
       if (line.type === 'choice-evidence') choiceEvents.push({ li: Number.isFinite(line.lineIndex) ? line.lineIndex : 0, correct: line.correct || null });
+      if (line.type === 'choice-button' && line.choiceId) buttonById.set(line.choiceId, line.buttonPath || '');
     }
   }
   const branchKey = text => String(text || '').replace(/的/g, '').replace(/\s+/g, '');
@@ -756,7 +795,25 @@ async function buildTrialNode(node, actDir, chapter, annotations, names, serials
       if (!inventoryStage) optionRoutes[letter] = publicPath(resultPath);
       let next = entry.item.isCorrect === true || !stageHasCorrect ? continuation(stage, entry) : retryTarget(stage);
       const finite = entry.start < Number.MAX_SAFE_INTEGER - 2000;
-      const resultBody = finite ? dialogueMd(node.dialogue.slice(entry.start, entry.end + 1), names, cutscenes.get(node.id)?.after, [], keyword) : '讨论继续。';
+      // 正文只能印到「下一条决策」之前。判据：任何**不属于本条支线**（自己这一层 ＋ 上层祖先）的阶段，
+      // 只要它的选项起点落在本回应区间内，就是越界点；不截断就会把下一题所有分支一起印出来
+      // （审判-025-回应-01-H／审判-026-回应-01-F／审判-015-回应-05-B／审判-025-回应-03-A／-04-A／审判-089-回应-03-A 都是这么漏的）。
+      const lineage = new Set();
+      for (let cursor = entry; cursor; ) {
+        const owner = model.stageByEntry.get(cursor.key);
+        if (!owner || lineage.has(owner)) break;
+        lineage.add(owner);
+        cursor = owner.anchor ? model.byKey.get(owner.anchor) : null;
+      }
+      const cuts = [];
+      for (const other of model.stages) {
+        if (lineage.has(other)) continue;
+        for (const option of other.options) if (option.start > entry.start && option.start <= entry.end) cuts.push({ stage: other.id, option: option.key, start: option.start });
+      }
+      const stop = cuts.length ? Math.min(...cuts.map(cut => cut.start)) : entry.end + 1;
+
+      if (finite && cuts.length) trimmedBodies.push({ '节点': node.id, '文件': publicPath(resultPath), '原区间': entry.start + '-' + entry.end, '截断于': stop, '越界的阶段': [...new Set(cuts.filter(cut => cut.start === stop).map(cut => cut.stage))], '越界的选项': cuts.filter(cut => cut.start === stop).map(cut => cut.option) });
+      const resultBody = finite ? dialogueMd(node.dialogue.slice(entry.start, stop), names, cutscenes.get(node.id)?.after, [], keyword) : '讨论继续。';
       const route = next ? { '继续': next } : {};
       const emitted = await emit(resultPath, '审判回应', resultBody || '讨论继续。', route);
       attachKeywords(publicPath(resultPath));
@@ -902,6 +959,13 @@ async function buildTrialNode(node, actDir, chapter, annotations, names, serials
     for (let i = 0; i < displayedOptions.length; i++) {
       if (nameCount.get(clean(displayedOptions[i].text || '')) < 2) continue;
       optionNotes[i] = optionNotes[i] ? `${optionNotes[i]}；同名选项，通往不同回应` : '同名选项，通往不同回应';
+    }
+    // 选项类型前缀：【反驳】/【赞同】/【存疑】/【伪证】/【魔法名】——只加标记，不动选项文字与路由。
+    if (!inventoryStage && buttonById.size) {
+      displayedOptions = displayedOptions.map(option => {
+        const tag = option.key ? choiceTagFor(buttonById.get(option.key)) : '';
+        return tag ? { ...option, text: `【${tag}】${clean(option.text || '')}` } : option;
+      });
     }
     const decisionBody = `${mechanism}\n\n${choiceMd(displayedOptions, optionNotes, keywordStage).trim()}`;
     const emitted = await emit(decisionPath, '魔女审判', decisionBody, { '选项': optionRoutes });
@@ -1163,7 +1227,8 @@ async function main() {
   await stat(join(sourceRoot, 'data', 'act01.json'));
   report.sourceCommit = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   await rm(outputRoot, { recursive: true, force: true });
-  await rm(hostRoot, { recursive: true, force: true });
+  // ⚠️ 不删主持人目录：里面还有日志、约定、勘误表等人工文件；只覆盖本脚本产出的两个 json。
+  // await rm(hostRoot, { recursive: true, force: true });
   await mkdir(hostRoot, { recursive: true });
   const chars = await json(join(sourceRoot, 'data', 'chara-index.json'));
   const names = speakerMap(chars);
@@ -1185,11 +1250,13 @@ async function main() {
   report.totals.locatedTricks = locatedGalleryTricks.size;
   report.unlocatedStills = gallery.items.filter(item => item.category === 'stills' && !locatedGalleryStills.has(item.id)).map(item => item.id);
   await validate(starts);
+  report.trimmedBodies = trimmedBodies;
   report.totals.sourceDialogue = sourceLines.size;
   report.totals.uniqueDialogue = sourceDialogueLabels.size;
   report.totals.repeatedDialogue = report.totals.dialogueInstances - report.totals.sourceDialogue;
   await writeFile(join(hostRoot, '路线索引.json'), JSON.stringify({ sourceCommit: report.sourceCommit, '起点': starts, '证物栏': evidenceBoards, '魔女图鉴': witchbookBoards, '事件插画': reenactBoards, '结局插画': endingBoards, '关键字': keywordIndex, '清单': inventoryIndex, '路由': routes }, null, 2), 'utf8');
   await writeFile(join(hostRoot, '构建报告.json'), JSON.stringify(report, null, 2), 'utf8');
   console.log(`构建完成：${report.totals.files} 个 Markdown，${report.totals.dialogueInstances} 个对白实例，${report.totals.images} 张图片。`);
+  console.log(`截断自检：${trimmedBodies.length} 处回应正文被截断`);
 }
 main().catch(error => { console.error(error.stack || error); process.exitCode = 1; });
